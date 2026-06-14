@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Установщик автозапуска OpenConnect VPN через systemd + NetworkManager dispatcher.
-# Поддерживает dnf, zypper, apt и pacman. Запускать от root.
-
 SERVICE_NAME="openconnect-auto.service"
 ENV_DIR="/etc/openconnect"
 ENV_FILE="${ENV_DIR}/auto.env"
@@ -16,7 +13,18 @@ POLKIT_DIR="/etc/polkit-1/rules.d"
 POLKIT_FILE="${POLKIT_DIR}/49-openconnect-auto.rules"
 LOCK_FILE="/run/openconnect-auto.manual-stop"
 
+# Пути старого билда с именем "paradise", которые нужно почистить при апгрейде.
+LEGACY_SERVICE="openconnect-paradise.service"
+LEGACY_ENV="/etc/openconnect/paradise.env"
+LEGACY_WRAPPER="/usr/local/bin/openconnect-paradise.sh"
+LEGACY_UNIT="/etc/systemd/system/openconnect-paradise.service"
+LEGACY_DISPATCHER="/etc/NetworkManager/dispatcher.d/90-openconnect-paradise"
+LEGACY_POLKIT="/etc/polkit-1/rules.d/49-openconnect-paradise.rules"
+LEGACY_LOCK="/run/openconnect-paradise.manual-stop"
+
 VPN_SERVER=""
+VPN_SERVER_TEMPLATE=""
+VPN_SERVER_REG=""
 VPN_CERT=""
 VPN_PASSWORD=""
 VPN_PASSWORD_MODE=""
@@ -30,6 +38,45 @@ die()  { printf '[x] %s\n' "$*" >&2; exit 1; }
 
 require_root() {
     [[ "${EUID}" -eq 0 ]] || die "Run this installer as root."
+}
+
+# Ищем остатки старого билда "paradise" и предлагаем их убрать.
+cleanup_legacy() {
+    local found=()
+
+    [[ -f "$LEGACY_ENV" ]]        && found+=("$LEGACY_ENV")
+    [[ -f "$LEGACY_WRAPPER" ]]    && found+=("$LEGACY_WRAPPER")
+    [[ -f "$LEGACY_UNIT" ]]       && found+=("$LEGACY_UNIT")
+    [[ -f "$LEGACY_DISPATCHER" ]] && found+=("$LEGACY_DISPATCHER")
+    [[ -f "$LEGACY_POLKIT" ]]     && found+=("$LEGACY_POLKIT")
+    [[ -e "$LEGACY_LOCK" ]]       && found+=("$LEGACY_LOCK")
+
+    [[ "${#found[@]}" -eq 0 ]] && return 0
+
+    warn "Found legacy 'paradise' build artifacts:"
+    for f in "${found[@]}"; do
+        printf '    %s\n' "$f"
+    done
+
+    read -r -p "Remove them now? [Y/n]: " ans
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Nn]$ ]] && return 0
+
+    if systemctl is-active "$LEGACY_SERVICE" >/dev/null 2>&1; then
+        log "Stopping legacy service: $LEGACY_SERVICE"
+        systemctl stop "$LEGACY_SERVICE" || true
+    fi
+    if systemctl is-enabled "$LEGACY_SERVICE" >/dev/null 2>&1; then
+        log "Disabling legacy service: $LEGACY_SERVICE"
+        systemctl disable "$LEGACY_SERVICE" || true
+    fi
+
+    for f in "${found[@]}"; do
+        rm -f "$f" && log "Removed: $f"
+    done
+
+    systemctl daemon-reload
+    ok "Legacy artifacts removed."
 }
 
 have_cmd() {
@@ -183,6 +230,8 @@ load_env_file() {
     [[ -f "$file" ]] || return 1
 
     VPN_SERVER=""
+    VPN_SERVER_TEMPLATE=""
+    VPN_SERVER_REG=""
     VPN_CERT=""
     VPN_PASSWORD=""
     VPN_PASSWORD_MODE=""
@@ -274,18 +323,51 @@ collect_settings() {
     prompt_default TARGET_USER "Target local user for --setuid" "$default_user"
     id "$TARGET_USER" >/dev/null 2>&1 || die "User '$TARGET_USER' does not exist."
 
-    prompt_default VPN_SERVER_NEW "VPN server URL (example: https://vpn.example.com)" "${VPN_SERVER:-}"
-    [[ -n "$VPN_SERVER_NEW" ]] || die "VPN server URL cannot be empty."
+    local server_mode_default=1
+    [[ -n "${VPN_SERVER_TEMPLATE:-}" ]] && server_mode_default=2
+    echo
+    echo 'VPN server mode:'
+    echo '  1) static   - one fixed URL'
+    echo '  2) template - URL with {$REG} placeholder (switch later with vpnctl set-server)'
+    read -r -p "Choose [1/2] (default $server_mode_default): " server_mode_choice
+    server_mode_choice="${server_mode_choice:-$server_mode_default}"
+
+    VPN_SERVER_TEMPLATE_NEW=""
+    case "$server_mode_choice" in
+        1)
+            prompt_default VPN_SERVER_NEW "VPN server URL" "${VPN_SERVER:-}"
+            [[ -n "$VPN_SERVER_NEW" ]] || die "VPN server URL cannot be empty."
+            ;;
+        2)
+            prompt_default VPN_SERVER_TEMPLATE_NEW \
+                'Server template, e.g. {$REG}.nixen.online/?path' \
+                "${VPN_SERVER_TEMPLATE:-}"
+            [[ -n "$VPN_SERVER_TEMPLATE_NEW" ]] || die "Template cannot be empty."
+            prompt_default initial_reg 'Initial {$REG} value' "${VPN_SERVER_REG:-}"
+            [[ -n "$initial_reg" ]] || die "Region value cannot be empty."
+            local _ph='{$REG}'
+            VPN_SERVER_NEW="${VPN_SERVER_TEMPLATE_NEW//$_ph/$initial_reg}"
+            ;;
+        *)
+            die "Invalid server mode."
+            ;;
+    esac
 
     default_cert="${VPN_CERT:-/home/${TARGET_USER}/.config/openconnect/client.p12}"
-    prompt_default VPN_CERT_NEW "Path to certificate/p12 file" "$default_cert"
-    [[ -n "$VPN_CERT_NEW" ]] || die "Certificate path cannot be empty."
+    while true; do
+        prompt_default VPN_CERT_NEW "Path to certificate/p12 file" "$default_cert"
+        [[ -n "$VPN_CERT_NEW" ]] || die "Certificate path cannot be empty."
 
-    if [[ ! -f "$VPN_CERT_NEW" ]]; then
+        [[ -f "$VPN_CERT_NEW" ]] && break
+
         warn "Certificate file does not currently exist: $VPN_CERT_NEW"
-        read -r -p "Continue anyway? [y/N]: " ans
-        [[ "$ans" =~ ^[Yy]$ ]] || die "Installation aborted."
-    fi
+        read -r -p "Continue with this path [y], re-enter [n], abort [a]: " ans
+        case "${ans:-n}" in
+            [Yy]) break ;;
+            [Aa]) die "Installation aborted." ;;
+            *)    default_cert="$VPN_CERT_NEW" ;;
+        esac
+    done
 
     current_mode="${VPN_PASSWORD_MODE:-key}"
     echo
@@ -318,6 +400,8 @@ collect_settings() {
     START_AUTO="${START_AUTO:-Y}"
 
     VPN_SERVER="$VPN_SERVER_NEW"
+    VPN_SERVER_TEMPLATE="${VPN_SERVER_TEMPLATE_NEW:-}"
+    VPN_SERVER_REG="${initial_reg:-}"
     VPN_CERT="$VPN_CERT_NEW"
     VPN_PASSWORD="$VPN_PASSWORD_NEW"
     VPN_PASSWORD_MODE="$PASSWORD_MODE"
@@ -331,6 +415,8 @@ write_env() {
 
     {
         printf 'VPN_SERVER=%q\n' "$VPN_SERVER"
+        [[ -n "$VPN_SERVER_TEMPLATE" ]] && printf 'VPN_SERVER_TEMPLATE=%q\n' "$VPN_SERVER_TEMPLATE"
+        [[ -n "$VPN_SERVER_REG" ]] && printf 'VPN_SERVER_REG=%q\n' "$VPN_SERVER_REG"
         printf 'VPN_CERT=%q\n' "$VPN_CERT"
         printf 'VPN_PASSWORD=%q\n' "$VPN_PASSWORD"
         printf 'VPN_PASSWORD_MODE=%q\n' "$VPN_PASSWORD_MODE"
@@ -429,17 +515,19 @@ set -Eeuo pipefail
 
 unit="${SERVICE_NAME}"
 lock="${LOCK_FILE}"
+env_file="${ENV_FILE}"
 
 usage() {
-    cat <<USAGE
+    cat <<'USAGE'
 Usage:
-  vpnctl enable      - enable auto VPN and start
-  vpnctl disable     - disable auto VPN and stop
-  vpnctl start       - start VPN manually
-  vpnctl stop        - stop VPN manually
-  vpnctl restart     - restart VPN
-  vpnctl status      - show service status
-  vpnctl auto        - show auto mode
+  vpnctl enable             - enable auto VPN and start
+  vpnctl disable            - disable auto VPN and stop
+  vpnctl start              - start VPN manually
+  vpnctl stop               - stop VPN manually
+  vpnctl restart            - restart VPN
+  vpnctl status             - show service status
+  vpnctl auto               - show auto mode
+  vpnctl set-server <reg>   - substitute {\$REG} in template and restart
 USAGE
     exit 2
 }
@@ -447,22 +535,22 @@ USAGE
 cmd="\${1:-}"
 [[ -n "\$cmd" ]] || usage
 
-need_root_for_lock() {
+need_root() {
     [[ "\$EUID" -eq 0 ]] || {
-        echo "This action needs root because it writes \$lock" >&2
+        echo "This action needs root." >&2
         exit 1
     }
 }
 
 case "\$cmd" in
     enable)
-        need_root_for_lock
+        need_root
         rm -f "\$lock"
         systemctl reset-failed "\$unit" >/dev/null 2>&1 || true
         exec systemctl start "\$unit"
         ;;
     disable)
-        need_root_for_lock
+        need_root
         touch "\$lock"
         exec systemctl stop "\$unit"
         ;;
@@ -486,6 +574,29 @@ case "\$cmd" in
         else
             echo "auto: enabled"
         fi
+        ;;
+    set-server)
+        need_root
+        reg="\${2:-}"
+        [[ -n "\$reg" ]] || { echo "Usage: vpnctl set-server <region>" >&2; exit 2; }
+        # shellcheck disable=SC1090
+        source "\$env_file" 2>/dev/null || { echo "Cannot read \$env_file" >&2; exit 1; }
+        if [[ -n "\${VPN_SERVER_TEMPLATE:-}" ]]; then
+            placeholder='{\$REG}'
+            new_server="\${VPN_SERVER_TEMPLATE//\$placeholder/\$reg}"
+        else
+            new_server="\$reg"
+        fi
+        tmpfile="\$(mktemp)"
+        grep -v -e '^VPN_SERVER=' -e '^VPN_SERVER_REG=' "\$env_file" > "\$tmpfile"
+        printf 'VPN_SERVER=%q\n' "\$new_server" >> "\$tmpfile"
+        printf 'VPN_SERVER_REG=%q\n' "\$reg" >> "\$tmpfile"
+        chmod 600 "\$tmpfile"
+        mv "\$tmpfile" "\$env_file"
+        chown root:root "\$env_file"
+        echo "Server set to: \$new_server"
+        systemctl reset-failed "\$unit" >/dev/null 2>&1 || true
+        exec systemctl restart "\$unit"
         ;;
     *)
         usage
@@ -678,11 +789,12 @@ Useful commands:
   sudo vpnctl start
   sudo vpnctl stop
   sudo vpnctl status
+  sudo vpnctl set-server <region>
   journalctl -u NetworkManager -u ${SERVICE_NAME} -f
 
 Current settings:
   VPN_SERVER=$VPN_SERVER
-  VPN_CERT=$VPN_CERT
+$( [[ -n "$VPN_SERVER_TEMPLATE" ]] && printf '  VPN_SERVER_TEMPLATE=%s\n' "$VPN_SERVER_TEMPLATE" )  VPN_CERT=$VPN_CERT
   VPN_PASSWORD_MODE=$VPN_PASSWORD_MODE
   VPN_TARGET_USER=$VPN_TARGET_USER
   OPENCONNECT_BIN=${OPENCONNECT_BIN:-<not set>}
@@ -695,6 +807,7 @@ EOF
 
 main() {
     require_root
+    cleanup_legacy
     check_and_install_requirements
     resolve_openconnect_bin
     show_existing_install_state
