@@ -107,8 +107,9 @@ steamdeck_prepare() {
     if [[ ! -f /etc/pacman.d/gnupg/trustdb.gpg ]]; then
         log "Initializing pacman keyring"
         pacman-key --init </dev/null
-        pacman-key --populate archlinux </dev/null
     fi
+    # Populate всех доступных кейрингов, включая SteamOS-специфичные.
+    pacman-key --populate </dev/null
     # Синкаем базу пакетов заранее, чтобы в install_missing_packages не делать -u.
     # -Syu на Steam Deck тянет обновление системных пакетов SteamOS — это плохо.
     pacman -Sy --noconfirm </dev/null
@@ -149,9 +150,14 @@ install_missing_packages() {
             ;;
         pacman)
             if is_steamdeck; then
-                # На Steam Deck -Syu обновляет системные пакеты SteamOS — нежелательно.
+                # SteamOS пакеты (stoken, vpnc и др.) подписаны CI-ключом Valve,
+                # которого нет в архлинуксовом кейринге. SigLevel = Never обходит это.
                 # База уже синкнута в steamdeck_prepare, ставим только нужное.
-                pacman -S --needed --noconfirm "${pkgs[@]}"
+                local _tmp_conf
+                _tmp_conf="$(mktemp)"
+                sed 's/^SigLevel\s*=.*/SigLevel = Never/' /etc/pacman.conf > "$_tmp_conf"
+                pacman -S --needed --noconfirm --config "$_tmp_conf" "${pkgs[@]}"
+                rm -f "$_tmp_conf"
             else
                 # -Sy без -u на Arch это partial upgrade, поэтому ставим полное -Syu.
                 pacman -Syu --needed --noconfirm "${pkgs[@]}"
