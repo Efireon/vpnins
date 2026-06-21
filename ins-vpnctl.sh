@@ -90,6 +90,27 @@ backup_if_exists() {
     fi
 }
 
+is_steamdeck() {
+    [[ -f /etc/os-release ]] && grep -q '^ID=steamos' /etc/os-release
+}
+
+# На Steam Deck рутовая ФС read-only. Снимаем блокировку и инициализируем
+# ключи pacman если нужно. Пакеты слетят при следующем обновлении SteamOS.
+steamdeck_prepare() {
+    warn "Steam Deck (SteamOS) detected."
+    warn "Packages installed via pacman will be wiped on SteamOS system updates."
+    warn "Re-run this installer after each OS update to restore openconnect."
+    if have_cmd steamos-readonly; then
+        log "Disabling read-only filesystem"
+        steamos-readonly disable || die "Failed to disable read-only filesystem."
+    fi
+    if [[ ! -f /etc/pacman.d/gnupg/trustdb.gpg ]]; then
+        log "Initializing pacman keyring"
+        pacman-key --init
+        pacman-key --populate archlinux
+    fi
+}
+
 # Определяем пакетный менеджер. Порядок проверки задаёт приоритет.
 detect_pkg_manager() {
     if have_cmd dnf; then
@@ -139,6 +160,10 @@ install_missing_packages() {
 check_and_install_requirements() {
     local pm missing=()
     pm="$(detect_pkg_manager)"
+
+    if [[ "$pm" == "pacman" ]] && is_steamdeck; then
+        steamdeck_prepare
+    fi
 
     have_cmd openconnect || [[ -x /usr/sbin/openconnect ]] || [[ -x /usr/bin/openconnect ]] || missing+=("openconnect")
     have_cmd nmcli || missing+=("NetworkManager")
