@@ -106,9 +106,12 @@ steamdeck_prepare() {
     fi
     if [[ ! -f /etc/pacman.d/gnupg/trustdb.gpg ]]; then
         log "Initializing pacman keyring"
-        pacman-key --init
-        pacman-key --populate archlinux
+        pacman-key --init </dev/null
+        pacman-key --populate archlinux </dev/null
     fi
+    # Синкаем базу пакетов заранее, чтобы в install_missing_packages не делать -u.
+    # -Syu на Steam Deck тянет обновление системных пакетов SteamOS — это плохо.
+    pacman -Sy --noconfirm
 }
 
 # Определяем пакетный менеджер. Порядок проверки задаёт приоритет.
@@ -145,9 +148,14 @@ install_missing_packages() {
             apt-get install -y "${pkgs[@]}"
             ;;
         pacman)
-            # -Sy без -u на Arch это partial upgrade, поэтому ставим полное -Syu.
-            # --needed не трогает уже установленное.
-            pacman -Syu --needed --noconfirm "${pkgs[@]}"
+            if is_steamdeck; then
+                # На Steam Deck -Syu обновляет системные пакеты SteamOS — нежелательно.
+                # База уже синкнута в steamdeck_prepare, ставим только нужное.
+                pacman -S --needed --noconfirm "${pkgs[@]}"
+            else
+                # -Sy без -u на Arch это partial upgrade, поэтому ставим полное -Syu.
+                pacman -Syu --needed --noconfirm "${pkgs[@]}"
+            fi
             ;;
         *)
             warn "No supported package manager detected. Install manually: ${pkgs[*]}"
