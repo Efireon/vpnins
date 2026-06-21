@@ -359,38 +359,55 @@ collect_settings() {
     # оставляем пусто и спросим явно.
     [[ "$default_user" == "root" ]] && default_user=""
 
-    prompt_default TARGET_USER "Target local user for --setuid" "$default_user"
-    id "$TARGET_USER" >/dev/null 2>&1 || die "User '$TARGET_USER' does not exist."
+    while true; do
+        prompt_default TARGET_USER "Target local user for --setuid" "$default_user"
+        id "$TARGET_USER" >/dev/null 2>&1 && break
+        warn "User '$TARGET_USER' does not exist. Try again."
+        default_user="$TARGET_USER"
+    done
 
     local server_mode_default=1
     [[ -n "${VPN_SERVER_TEMPLATE:-}" ]] && server_mode_default=2
-    echo
-    echo 'VPN server mode:'
-    echo '  1) static   - one fixed URL'
-    echo '  2) template - URL with {$REG} placeholder (switch later with vpnctl set-server)'
-    read -r -p "Choose [1/2] (default $server_mode_default): " server_mode_choice
-    server_mode_choice="${server_mode_choice:-$server_mode_default}"
 
     VPN_SERVER_TEMPLATE_NEW=""
-    case "$server_mode_choice" in
-        1)
-            prompt_default VPN_SERVER_NEW "VPN server URL" "${VPN_SERVER:-}"
-            [[ -n "$VPN_SERVER_NEW" ]] || die "VPN server URL cannot be empty."
-            ;;
-        2)
-            prompt_default VPN_SERVER_TEMPLATE_NEW \
-                'Server template, e.g. {$REG}.nixen.online/?path' \
-                "${VPN_SERVER_TEMPLATE:-}"
-            [[ -n "$VPN_SERVER_TEMPLATE_NEW" ]] || die "Template cannot be empty."
-            prompt_default initial_reg 'Initial {$REG} value' "${VPN_SERVER_REG:-}"
-            [[ -n "$initial_reg" ]] || die "Region value cannot be empty."
-            local _ph='{$REG}'
-            VPN_SERVER_NEW="${VPN_SERVER_TEMPLATE_NEW//$_ph/$initial_reg}"
-            ;;
-        *)
-            die "Invalid server mode."
-            ;;
-    esac
+    while true; do
+        echo
+        echo 'VPN server mode:'
+        echo '  1) static   - one fixed URL'
+        echo '  2) template - URL with {$REG} placeholder (switch later with vpnctl set-server)'
+        read -r -p "Choose [1/2] (default $server_mode_default): " server_mode_choice
+        server_mode_choice="${server_mode_choice:-$server_mode_default}"
+        case "$server_mode_choice" in
+            1)
+                while true; do
+                    prompt_default VPN_SERVER_NEW "VPN server URL" "${VPN_SERVER:-}"
+                    [[ -n "$VPN_SERVER_NEW" ]] && break
+                    warn "URL cannot be empty."
+                done
+                break
+                ;;
+            2)
+                while true; do
+                    prompt_default VPN_SERVER_TEMPLATE_NEW \
+                        'Server template, e.g. {$REG}.nixen.online/?path' \
+                        "${VPN_SERVER_TEMPLATE:-}"
+                    [[ -n "$VPN_SERVER_TEMPLATE_NEW" ]] && break
+                    warn "Template cannot be empty."
+                done
+                while true; do
+                    prompt_default initial_reg 'Initial {$REG} value' "${VPN_SERVER_REG:-}"
+                    [[ -n "$initial_reg" ]] && break
+                    warn "Region value cannot be empty."
+                done
+                local _ph='{$REG}'
+                VPN_SERVER_NEW="${VPN_SERVER_TEMPLATE_NEW//$_ph/$initial_reg}"
+                break
+                ;;
+            *)
+                warn "Enter 1 or 2."
+                ;;
+        esac
+    done
 
     default_cert="${VPN_CERT:-/home/${TARGET_USER}/.config/openconnect/client.p12}"
     while true; do
@@ -409,23 +426,24 @@ collect_settings() {
     done
 
     current_mode="${VPN_PASSWORD_MODE:-key}"
-    echo
-    echo "Password mode:"
-    echo "  1) key  - password is for certificate/private key (--key-password)"
-    echo "  2) vpn  - password is regular VPN password (--passwd-on-stdin)"
-    if [[ "$current_mode" == "vpn" ]]; then
-        read -r -p "Choose mode [1/2] (default 2): " mode_choice
-        mode_choice="${mode_choice:-2}"
-    else
-        read -r -p "Choose mode [1/2] (default 1): " mode_choice
-        mode_choice="${mode_choice:-1}"
-    fi
-
-    case "$mode_choice" in
-        1) PASSWORD_MODE="key" ;;
-        2) PASSWORD_MODE="vpn" ;;
-        *) die "Invalid password mode." ;;
-    esac
+    while true; do
+        echo
+        echo "Password mode:"
+        echo "  1) key  - password is for certificate/private key (--key-password)"
+        echo "  2) vpn  - password is regular VPN password (--passwd-on-stdin)"
+        if [[ "$current_mode" == "vpn" ]]; then
+            read -r -p "Choose mode [1/2] (default 2): " mode_choice
+            mode_choice="${mode_choice:-2}"
+        else
+            read -r -p "Choose mode [1/2] (default 1): " mode_choice
+            mode_choice="${mode_choice:-1}"
+        fi
+        case "$mode_choice" in
+            1) PASSWORD_MODE="key"; break ;;
+            2) PASSWORD_MODE="vpn"; break ;;
+            *) warn "Enter 1 or 2." ;;
+        esac
+    done
 
     prompt_secret_with_default VPN_PASSWORD_NEW "VPN password / key password" "${VPN_PASSWORD:-}"
 
