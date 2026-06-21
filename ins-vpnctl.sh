@@ -845,6 +845,9 @@ EOF
 }
 
 main() {
+    # При запуске через pipe (wget ... | bash) stdin это сам скрипт, а не терминал.
+    # Перецепляем stdin к /dev/tty чтобы интерактивные read работали в любом случае.
+    exec < /dev/tty
     require_root
     cleanup_legacy
     check_and_install_requirements
