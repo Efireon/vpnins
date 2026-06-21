@@ -102,7 +102,7 @@ steamdeck_prepare() {
     warn "Re-run this installer after each OS update to restore openconnect."
     if have_cmd steamos-readonly; then
         log "Disabling read-only filesystem"
-        steamos-readonly disable || die "Failed to disable read-only filesystem."
+        steamos-readonly disable </dev/null || die "Failed to disable read-only filesystem."
     fi
     if [[ ! -f /etc/pacman.d/gnupg/trustdb.gpg ]]; then
         log "Initializing pacman keyring"
@@ -111,7 +111,7 @@ steamdeck_prepare() {
     fi
     # Синкаем базу пакетов заранее, чтобы в install_missing_packages не делать -u.
     # -Syu на Steam Deck тянет обновление системных пакетов SteamOS — это плохо.
-    pacman -Sy --noconfirm
+    pacman -Sy --noconfirm </dev/null
 }
 
 # Определяем пакетный менеджер. Порядок проверки задаёт приоритет.
@@ -184,7 +184,7 @@ check_and_install_requirements() {
     fi
 
     warn "Missing requirements: ${missing[*]}"
-    read -r -p "Try to install missing packages automatically? [Y/n]: " ans
+    read -r -p "Try to install missing packages automatically? [Y/n]: " ans || true
     ans="${ans:-Y}"
     [[ "$ans" =~ ^[Nn]$ ]] && die "Missing packages were not installed."
 
