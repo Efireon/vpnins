@@ -409,21 +409,66 @@ collect_settings() {
         esac
     done
 
-    default_cert="${VPN_CERT:-/home/${TARGET_USER}/.config/openconnect/client.p12}"
-    while true; do
-        prompt_default VPN_CERT_NEW "Path to certificate/p12 file" "$default_cert"
-        [[ -n "$VPN_CERT_NEW" ]] || die "Certificate path cannot be empty."
+    local dest_cert="/home/${TARGET_USER}/.config/openconnect/client.p12"
+    local default_cert="${VPN_CERT:-$dest_cert}"
+    local cert_selected=false
 
-        [[ -f "$VPN_CERT_NEW" ]] && break
+    read -r -p "Search for certificates (*_modern.p12, *_legacy.p12) in /home/${TARGET_USER}/? [Y/n]: " do_search
+    do_search="${do_search:-Y}"
 
-        warn "Certificate file does not currently exist: $VPN_CERT_NEW"
-        read -r -p "Continue with this path [y], re-enter [n], abort [a]: " ans
-        case "${ans:-n}" in
-            [Yy]) break ;;
-            [Aa]) die "Installation aborted." ;;
-            *)    default_cert="$VPN_CERT_NEW" ;;
-        esac
-    done
+    if [[ "$do_search" =~ ^[Yy]$ ]]; then
+        local found_certs=()
+        mapfile -t found_certs < <(find "/home/${TARGET_USER}/" \
+            \( -name "*_modern.p12" -o -name "*_legacy.p12" \) 2>/dev/null | sort)
+
+        if [[ "${#found_certs[@]}" -eq 0 ]]; then
+            warn "No certificates found. Enter path manually."
+        else
+            echo "Found certificates:"
+            local i
+            for (( i=0; i<${#found_certs[@]}; i++ )); do
+                printf '  %d) %s\n' "$((i+1))" "${found_certs[$i]}"
+            done
+            echo "  0) Enter manually"
+
+            while true; do
+                read -r -p "Choose [0-${#found_certs[@]}]: " cert_choice
+                cert_choice="${cert_choice:-}"
+                [[ "$cert_choice" == "0" ]] && break
+                if [[ "$cert_choice" =~ ^[0-9]+$ ]] \
+                    && (( cert_choice >= 1 && cert_choice <= ${#found_certs[@]} )); then
+                    local selected="${found_certs[$((cert_choice-1))]}"
+                    if [[ "$selected" != "$dest_cert" ]] && [[ ! -f "$dest_cert" ]]; then
+                        install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" \
+                            "$(dirname "$dest_cert")"
+                        cp "$selected" "$dest_cert"
+                        chown "${TARGET_USER}:${TARGET_USER}" "$dest_cert"
+                        chmod 600 "$dest_cert"
+                        ok "Certificate copied to $dest_cert"
+                    fi
+                    VPN_CERT_NEW="$dest_cert"
+                    cert_selected=true
+                    break
+                fi
+                warn "Enter a number between 0 and ${#found_certs[@]}."
+            done
+        fi
+    fi
+
+    if ! "$cert_selected"; then
+        while true; do
+            prompt_default VPN_CERT_NEW "Path to certificate/p12 file" "$default_cert"
+            [[ -n "$VPN_CERT_NEW" ]] || { warn "Path cannot be empty."; continue; }
+            [[ -f "$VPN_CERT_NEW" ]] && break
+            warn "Certificate file does not currently exist: $VPN_CERT_NEW"
+            read -r -p "Continue with this path [y], re-enter [n], abort [a]: " ans
+            case "${ans:-n}" in
+                [Yy]) break ;;
+                [Aa]) die "Installation aborted." ;;
+                *)    default_cert="$VPN_CERT_NEW" ;;
+            esac
+        done
+    fi
 
     current_mode="${VPN_PASSWORD_MODE:-key}"
     while true; do
