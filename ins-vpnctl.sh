@@ -94,8 +94,8 @@ is_steamdeck() {
     [[ -f /etc/os-release ]] && grep -q '^ID=steamos' /etc/os-release
 }
 
-# На Steam Deck рутовая ФС read-only. Снимаем блокировку и инициализируем
-# ключи pacman если нужно. Пакеты слетят при следующем обновлении SteamOS.
+# На Steam Deck рутовая ФС read-only. Снимаем блокировку и фиксируем кейринг.
+# Пакеты слетят при следующем обновлении SteamOS.
 steamdeck_prepare() {
     warn "Steam Deck (SteamOS) detected."
     warn "Packages installed via pacman will be wiped on SteamOS system updates."
@@ -104,15 +104,20 @@ steamdeck_prepare() {
         log "Disabling read-only filesystem"
         steamos-readonly disable </dev/null || die "Failed to disable read-only filesystem."
     fi
-    if [[ ! -f /etc/pacman.d/gnupg/trustdb.gpg ]]; then
-        log "Initializing pacman keyring"
-        pacman-key --init </dev/null
-    fi
-    # Populate всех доступных кейрингов, включая SteamOS-специфичные.
-    pacman-key --populate </dev/null
-    # Синкаем базу пакетов заранее, чтобы в install_missing_packages не делать -u.
-    # -Syu на Steam Deck тянет обновление системных пакетов SteamOS — это плохо.
-    pacman -Sy --noconfirm </dev/null
+
+    log "Fixing SteamOS pacman keyring"
+    # holo-keyring — пакет с ключами Valve/GitLab CI, без него пакеты из
+    # jupiter/holo репов дают "unknown trust". Но чтобы его поставить, нужно
+    # временно отключить проверку подписей — курица и яйцо.
+    local _tmp_conf
+    _tmp_conf="$(mktemp)"
+    sed 's/^SigLevel\s*=.*/SigLevel = TrustAll/' /etc/pacman.conf > "$_tmp_conf"
+    pacman -Sy --noconfirm --config "$_tmp_conf" </dev/null
+    pacman -S --needed --noconfirm --config "$_tmp_conf" holo-keyring archlinux-keyring </dev/null
+    rm -f "$_tmp_conf"
+
+    [[ -f /etc/pacman.d/gnupg/trustdb.gpg ]] || pacman-key --init </dev/null
+    pacman-key --populate archlinux holo </dev/null
 }
 
 # Определяем пакетный менеджер. Порядок проверки задаёт приоритет.
@@ -150,14 +155,8 @@ install_missing_packages() {
             ;;
         pacman)
             if is_steamdeck; then
-                # SteamOS пакеты (stoken, vpnc и др.) подписаны CI-ключом Valve,
-                # которого нет в архлинуксовом кейринге. SigLevel = Never обходит это.
-                # База уже синкнута в steamdeck_prepare, ставим только нужное.
-                local _tmp_conf
-                _tmp_conf="$(mktemp)"
-                sed 's/^SigLevel\s*=.*/SigLevel = Never/' /etc/pacman.conf > "$_tmp_conf"
-                pacman -S --needed --noconfirm --config "$_tmp_conf" "${pkgs[@]}"
-                rm -f "$_tmp_conf"
+                # База и кейринг уже подготовлены в steamdeck_prepare.
+                pacman -S --needed --noconfirm "${pkgs[@]}"
             else
                 # -Sy без -u на Arch это partial upgrade, поэтому ставим полное -Syu.
                 pacman -Syu --needed --noconfirm "${pkgs[@]}"
