@@ -156,7 +156,8 @@ install_missing_packages() {
         pacman)
             if is_steamdeck; then
                 # База и кейринг уже подготовлены в steamdeck_prepare.
-                pacman -S --needed --noconfirm "${pkgs[@]}"
+                # </dev/null чтобы pacman не съел stdin и collect_settings смог читать.
+                pacman -S --needed --noconfirm "${pkgs[@]}" </dev/null
             else
                 # -Sy без -u на Arch это partial upgrade, поэтому ставим полное -Syu.
                 pacman -Syu --needed --noconfirm "${pkgs[@]}"
