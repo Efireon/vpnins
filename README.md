@@ -4,7 +4,7 @@
 
 Дальше через `vpnctl`: enable, disable, start, stop, restart, status, auto. `disable` ставит замок, чтобы dispatcher не поднимал VPN сам, `enable` его снимает. Логи смотреть в `journalctl -u openconnect-auto.service -f`.
 
-**Steam Deck.** Скрипт сам снимает read-only ФС, фиксит кейринг и ставит openconnect. Запускать лучше файлом, а не через пайп — тогда вывод виден с самого начала:
+**Steam Deck.** Скрипт сам снимает read-only ФС, фиксит кейринг и ставит openconnect. Запускать лучше файлом, а не через пайп - тогда вывод виден с самого начала:
 
 ```
 wget -O /tmp/ins-vpnctl.sh https://raw.githubusercontent.com/Efireon/vpnins/refs/heads/main/ins-vpnctl.sh
