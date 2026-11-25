@@ -6,6 +6,8 @@ ENV_DIR="/etc/openconnect"
 ENV_FILE="${ENV_DIR}/auto.env"
 WRAPPER="/usr/local/bin/openconnect-auto.sh"
 VPNCTL="/usr/local/bin/vpnctl"
+# На openSUSE и части дистрибутивов /usr/local/bin не входит в secure_path у sudo.
+VPNCTL_SYMLINK="/usr/bin/vpnctl"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}"
 DISPATCHER_DIR="/etc/NetworkManager/dispatcher.d"
 DISPATCHER_FILE="${DISPATCHER_DIR}/90-openconnect-auto"
@@ -961,6 +963,21 @@ EOF
     } | install_file_atomic "$VPNCTL" 755 root root
 
     ok "vpnctl written."
+
+    if [[ -n "$VPNCTL_SYMLINK" && "$VPNCTL_SYMLINK" != "$VPNCTL" ]]; then
+        local symlink_dir
+        symlink_dir="$(dirname "$VPNCTL_SYMLINK")"
+        if [[ -d "$symlink_dir" && -w "$symlink_dir" ]]; then
+            if [[ ! -e "$VPNCTL_SYMLINK" || -L "$VPNCTL_SYMLINK" ]]; then
+                ln -sfn "$VPNCTL" "$VPNCTL_SYMLINK"
+                ok "Symlink created: $VPNCTL_SYMLINK (target: $VPNCTL)"
+            else
+                warn "Skipping symlink $VPNCTL_SYMLINK: non-symlink file already exists."
+            fi
+        else
+            warn "Skipping symlink $VPNCTL_SYMLINK: directory is not writable."
+        fi
+    fi
 }
 
 write_unit() {
@@ -1129,6 +1146,7 @@ apply_selinux_contexts() {
         log "Applying SELinux contexts"
         restorecon -v "$WRAPPER" 2>/dev/null || true
         restorecon -v "$VPNCTL" 2>/dev/null || true
+        [[ -L "$VPNCTL_SYMLINK" ]] && restorecon -v "$VPNCTL_SYMLINK" 2>/dev/null || true
         restorecon -v "$DISPATCHER_FILE" 2>/dev/null || true
         restorecon -v "$UNIT_FILE" 2>/dev/null || true
         [[ -f "$POLKIT_FILE" ]] && restorecon -v "$POLKIT_FILE" 2>/dev/null || true
@@ -1178,6 +1196,7 @@ reload_services() {
 final_summary() {
     printf '\nDone.\n\nInstalled/updated files:\n'
     printf '  %s\n' "$ENV_FILE" "$WRAPPER" "$VPNCTL" "$UNIT_FILE" "$DISPATCHER_FILE"
+    [[ -L "$VPNCTL_SYMLINK" ]] && printf '  %s\n' "$VPNCTL_SYMLINK"
     [[ -f "$POLKIT_FILE" ]] && printf '  %s\n' "$POLKIT_FILE"
 
     cat <<EOF
